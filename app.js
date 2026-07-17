@@ -13,7 +13,7 @@ const DATA_CANDIDATES = [
 const LEVELS = [
   { key: "elementary", label: "Elementary", age: "Ages 8–10" },
   { key: "middle", label: "Middle", age: "Ages 11–13" },
-  { key: "high_school", label: "High school", age: "Ages 14–18" },
+  { key: "high_school", label: "High", age: "Ages 14–18" },
 ];
 
 const LEVEL_BY_KEY = Object.fromEntries(LEVELS.map((level) => [level.key, level]));
