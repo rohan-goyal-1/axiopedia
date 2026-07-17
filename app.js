@@ -1,14 +1,4 @@
-const DATA_CANDIDATES = [
-  { path: "./public_export.json", type: "json" },
-  { path: "../../data/public_export.json", type: "json" },
-  { path: "../../data/batches/batch_20260714T181239Z_part001_results.jsonl", type: "jsonl" },
-  { path: "../../data/batches/batch_20260714T181239Z_part002_results.jsonl", type: "jsonl" },
-  { path: "../../data/batches/batch_20260714T180242Z_part001_results.jsonl", type: "jsonl" },
-  { path: "../../data/batches/batch_20260714T174532Z_part001_results.jsonl", type: "jsonl" },
-  { path: "../../data/batches/batch_20260714T185700Z_part001_results.jsonl", type: "jsonl" },
-  { path: "../../data/batches/batch_20260714T185700Z_part002_results.jsonl", type: "jsonl" },
-  { path: "../../data/batches/batch_20260714T185700Z_part003_results.jsonl", type: "jsonl" },
-];
+const DATA_PATHS = ["./public_export.json", "../../data/public_export.json"];
 
 const LEVELS = [
   { key: "elementary", label: "Elementary", age: "Ages 8–10" },
@@ -44,10 +34,16 @@ bindThemeAndChrome();
 init();
 
 async function init() {
-  state.entries = (await loadEntries()).sort(compareEntriesByTitle);
-  entryCount.textContent = entryCountText(state.entries.length);
-  bindSearchEvents();
-  renderRoute();
+  try {
+    state.entries = (await loadEntries()).sort(compareEntriesByTitle);
+    entryCount.textContent = entryCountText(state.entries.length);
+    bindSearchEvents();
+    renderRoute();
+  } catch (error) {
+    console.error(error);
+    entryCount.textContent = "Data unavailable";
+    view.innerHTML = `<p class="empty">Could not load public_export.json.</p>`;
+  }
 }
 
 function initTheme() {
@@ -176,80 +172,31 @@ function updateClearButton() {
 }
 
 async function loadEntries() {
-  const [publicExport, ...fallbackCandidates] = DATA_CANDIDATES;
-  const publicEntries = await loadCandidateEntries(publicExport);
-  if (publicEntries.length) return dedupeEntries(publicEntries);
-
-  const loaded = [];
-  for (const candidate of fallbackCandidates) {
-    loaded.push(...(await loadCandidateEntries(candidate)));
-  }
-
-  return dedupeEntries(loaded);
-}
-
-async function loadCandidateEntries(candidate) {
-  try {
-    const response = await fetch(candidate.path, { cache: "no-store" });
-    if (!response.ok) return [];
-    const text = await response.text();
-    const parsed = candidate.type === "jsonl" ? parseJsonl(text) : [JSON.parse(text)];
-    return parsed.flatMap(normalizePayload);
-  } catch (error) {
-    console.warn(`Could not load ${candidate.path}`, error);
-    return [];
-  }
-}
-
-function parseJsonl(text) {
-  return text
-    .split(/\r?\n/)
-    .map((line) => line.trim())
-    .filter(Boolean)
-    .map((line) => {
-      try {
-        return JSON.parse(line);
-      } catch {
-        return null;
+  const failures = [];
+  for (const path of DATA_PATHS) {
+    try {
+      const response = await fetch(path, { cache: "no-store" });
+      if (!response.ok) {
+        failures.push(`${path}: ${response.status}`);
+        continue;
       }
-    })
-    .filter(Boolean);
+      const payload = await response.json();
+      const entries = normalizePayload(payload);
+      if (!entries.length) throw new Error(`${path} contained no articles`);
+      return dedupeEntries(entries);
+    } catch (error) {
+      failures.push(`${path}: ${error.message}`);
+    }
+  }
+  throw new Error(`Could not load public export. ${failures.join("; ")}`);
 }
 
 function normalizePayload(payload) {
   if (Array.isArray(payload)) return payload.flatMap(normalizePayload);
 
-  const generated = parseBatchGeneratedArticle(payload);
-  if (generated) return [generatedToEntry(generated)];
-
   if (payload?.summaries) return [publicExportToEntry(payload)];
-  if (payload?.elementary && payload?.middle && payload?.high_school) return [generatedToEntry(payload)];
 
   return [];
-}
-
-function parseBatchGeneratedArticle(payload) {
-  const content = payload?.response?.body?.choices?.[0]?.message?.content;
-  if (!content) return null;
-  try {
-    return JSON.parse(content);
-  } catch {
-    return null;
-  }
-}
-
-function generatedToEntry(article) {
-  return {
-    sep_slug: article.sep_slug || slugify(article.title),
-    sep_url: article.sep_url || article.read_more_url || "",
-    title: article.title || article.source_title || "Untitled entry",
-    source_title: article.source_title || article.title || "",
-    attribution: article.attribution || "",
-    sensitive_topic: Boolean(article.sensitive_topic),
-    summaries: LEVELS.map((level) => level.key)
-      .filter((level) => article[level])
-      .map((level) => ({ level, ...article[level] })),
-  };
 }
 
 function publicExportToEntry(article) {
