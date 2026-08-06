@@ -1,4 +1,5 @@
-const DATA_PATHS = ["./public_export.json", "../../data/public_export.json"];
+const INDEX_PATHS = ["./data/index.json", "../../data/web/index.json"];
+const ARTICLE_PATHS = ["./data/entries", "../../data/web/entries"];
 
 const LEVELS = [
   { key: "elementary", label: "Elementary", age: "Ages 8–10" },
@@ -15,6 +16,7 @@ const state = {
   results: [],
   query: "",
   articleLevels: new Map(),
+  articles: new Map(),
 };
 
 const entryCount = document.querySelector("#entry-count");
@@ -35,14 +37,14 @@ init();
 
 async function init() {
   try {
-    state.entries = (await loadEntries()).sort(compareEntriesByTitle);
+    state.entries = (await loadIndex()).sort(compareEntriesByTitle);
     entryCount.textContent = entryCountText(state.entries.length);
     bindSearchEvents();
     renderRoute();
   } catch (error) {
     console.error(error);
     entryCount.textContent = "Data unavailable";
-    view.innerHTML = `<p class="empty">Could not load public_export.json.</p>`;
+    view.innerHTML = `<p class="empty">Could not load the article index.</p>`;
   }
 }
 
@@ -171,9 +173,9 @@ function updateClearButton() {
   clearSearch.hidden = !state.query.trim();
 }
 
-async function loadEntries() {
+async function loadIndex() {
   const failures = [];
-  for (const path of DATA_PATHS) {
+  for (const path of INDEX_PATHS) {
     try {
       const response = await fetch(path, { cache: "no-store" });
       if (!response.ok) {
@@ -181,14 +183,36 @@ async function loadEntries() {
         continue;
       }
       const payload = await response.json();
-      const entries = normalizePayload(payload);
-      if (!entries.length) throw new Error(`${path} contained no articles`);
-      return dedupeEntries(entries);
+      if (!Array.isArray(payload) || !payload.length) throw new Error(`${path} contained no articles`);
+      return payload.filter((entry) => entry?.sep_slug && entry?.title);
     } catch (error) {
       failures.push(`${path}: ${error.message}`);
     }
   }
-  throw new Error(`Could not load public export. ${failures.join("; ")}`);
+  throw new Error(`Could not load article index. ${failures.join("; ")}`);
+}
+
+async function loadArticle(slug) {
+  if (state.articles.has(slug)) return state.articles.get(slug);
+
+  const failures = [];
+  for (const basePath of ARTICLE_PATHS) {
+    const path = `${basePath}/${encodeURIComponent(slug)}.json`;
+    try {
+      const response = await fetch(path);
+      if (!response.ok) {
+        failures.push(`${path}: ${response.status}`);
+        continue;
+      }
+      const entry = publicExportToEntry(await response.json());
+      if (!entry.summaries.length) throw new Error(`${path} contained no summaries`);
+      state.articles.set(slug, entry);
+      return entry;
+    } catch (error) {
+      failures.push(`${path}: ${error.message}`);
+    }
+  }
+  throw new Error(`Could not load article. ${failures.join("; ")}`);
 }
 
 function normalizePayload(payload) {
@@ -354,34 +378,12 @@ function scoreEntry(entry, query) {
 }
 
 function searchableFields(entry) {
-  const summaryFields = entry.summaries.flatMap((summary) => [
-    ["summary", summary.summary || ""],
-    ["idea", (summary.key_ideas || []).join(" ")],
-    ["term", (summary.important_terms || []).map((term) => `${term.term} ${term.definition}`).join(" ")],
-    ["question", (summary.questions_to_think_about || []).join(" ")],
-    ["example", summary.example || ""],
-    ["level", levelInfo(summary.level).label],
-  ]);
-
   return {
     title: entry.title || "",
     source: entry.source_title || "",
     slug: entry.sep_slug || "",
-    all: [entry.title, entry.source_title, entry.sep_slug, ...summaryFields.map(([, value]) => value)].join(" "),
-    summary: valuesFor(summaryFields, "summary"),
-    idea: valuesFor(summaryFields, "idea"),
-    term: valuesFor(summaryFields, "term"),
-    question: valuesFor(summaryFields, "question"),
-    example: valuesFor(summaryFields, "example"),
-    level: valuesFor(summaryFields, "level"),
+    all: [entry.title, entry.source_title, entry.sep_slug].join(" "),
   };
-}
-
-function valuesFor(fields, name) {
-  return fields
-    .filter(([field]) => field === name)
-    .map(([, value]) => value)
-    .join(" ");
 }
 
 function fieldText(fields, field) {
@@ -573,12 +575,25 @@ function buildArticleBlocks(summary, queryTokens) {
   return blocks;
 }
 
-function renderArticle(slug) {
-  const entry = state.entries.find((item) => item.sep_slug === slug);
-  if (!entry) {
+async function renderArticle(slug) {
+  const indexedEntry = state.entries.find((item) => item.sep_slug === slug);
+  if (!indexedEntry) {
     view.innerHTML = `<p class="empty">Entry not found. <a href="#/">Return to search</a></p>`;
     return;
   }
+
+  view.innerHTML = `<p class="empty">Loading ${escapeHtml(indexedEntry.title)}…</p>`;
+  let entry;
+  try {
+    entry = await loadArticle(slug);
+  } catch (error) {
+    console.error(error);
+    if (parseRoute().name === "entry" && parseRoute().slug === slug) {
+      view.innerHTML = `<p class="empty">Could not load this entry. <a href="#/">Return to search</a></p>`;
+    }
+    return;
+  }
+  if (parseRoute().name !== "entry" || parseRoute().slug !== slug) return;
 
   const summary = getCurrentSummary(entry);
   const level = levelInfo(summary.level);
